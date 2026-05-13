@@ -11,3 +11,10 @@ tree-sitter-typescript = "0.23"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 ignore = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
