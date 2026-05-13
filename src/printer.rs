@@ -222,8 +222,7 @@ fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
         p.write(if is_obj { "{" } else { "[" });
         for item in &items {
             p.newline(depth + 1);
-            p.write(item.trim());
-            p.write(",");
+            format_object_item(p, item, depth + 1, line_width);
         }
         p.newline(depth);
         p.write(if is_obj { "}" } else { "]" });
@@ -243,6 +242,59 @@ fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
         p.newline(depth);
         p.write(close_quote);
     }
+}
+
+/// Format a single object entry, recursing into nested objects/arrays.
+fn format_object_item(p: &mut Printer, item: &str, depth: usize, line_width: usize) {
+    let item = item.trim();
+    let colon = find_top_level_colon(item);
+    let (key, value) = match colon {
+        Some(pos) => (item[..pos].trim(), item[pos + 1..].trim()),
+        None => {
+            p.write(item);
+            p.write(",");
+            return;
+        }
+    };
+
+    p.write(key);
+    p.write(": ");
+
+    if (value.starts_with('{') && value.ends_with('}'))
+        || (value.starts_with('[') && value.ends_with(']'))
+    {
+        let is_obj = value.starts_with('{');
+        let inner = &value[1..value.len() - 1];
+        let nested_items = non_empty_parts(split_top_level(inner, &[',']));
+        let total_len = item.len() + depth * 4;
+        if nested_items.len() <= 1 && total_len <= line_width {
+            p.write(value);
+        } else {
+            p.write(if is_obj { "{" } else { "[" });
+            for ni in &nested_items {
+                p.newline(depth + 1);
+                format_object_item(p, ni, depth + 1, line_width);
+            }
+            p.newline(depth);
+            p.write(if is_obj { "}" } else { "]" });
+        }
+    } else {
+        p.write(value);
+    }
+    p.write(",");
+}
+
+fn find_top_level_colon(s: &str) -> Option<usize> {
+    let mut depth = 0u32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '{' | '[' | '(' => depth += 1,
+            '}' | ']' | ')' => depth = depth.saturating_sub(1),
+            ':' if depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn classify_inner(trimmed: &str, inner: &str) -> (bool, bool) {
