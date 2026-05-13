@@ -13,17 +13,6 @@ pub enum Lang {
     Tsx,
 }
 
-impl Lang {
-    #[allow(dead_code)]
-    pub fn from_extension(ext: &str) -> Option<Self> {
-        match ext {
-            "html" | "htm" | "heex" | "blade" | "templ" => Some(Lang::Html),
-            "jsx" | "tsx" => Some(Lang::Tsx),
-            _ => None,
-        }
-    }
-}
-
 use tree_sitter::Parser;
 use tree_sitter_html::LANGUAGE;
 use tree_sitter_typescript::LANGUAGE_TSX;
@@ -51,8 +40,9 @@ pub fn parse_and_format(
     line_width: usize,
     use_spaces: bool,
     tab_width: usize,
+    ext: &str,
 ) -> String {
-    let lang = detect_lang(input);
+    let lang = detect_lang(input, ext);
 
     match parse(input, lang) {
         Ok(tree) => {
@@ -62,7 +52,12 @@ pub fn parse_and_format(
     }
 }
 
-fn detect_lang(input: &str) -> Lang {
+fn detect_lang(input: &str, filename: &str) -> Lang {
+    // Use file extension/pattern when available
+    if let Some(lang) = lang_from_filename(filename) {
+        return lang;
+    }
+    // Fallback: heuristics for stdin
     if input.contains("=>")
         || input.contains("function ")
         || input.contains("export ")
@@ -72,4 +67,19 @@ fn detect_lang(input: &str) -> Lang {
         return Lang::Tsx;
     }
     Lang::Html
+}
+
+fn lang_from_filename(filename: &str) -> Option<Lang> {
+    if filename.ends_with(".tsx") || filename.ends_with(".jsx") {
+        return Some(Lang::Tsx);
+    }
+    if filename.ends_with(".html")
+        || filename.ends_with(".htm")
+        || filename.ends_with(".heex")
+        || filename.ends_with(".templ")
+        || filename.ends_with(".blade.php")
+    {
+        return Some(Lang::Html);
+    }
+    None
 }

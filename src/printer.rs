@@ -16,7 +16,14 @@ pub fn format_via_splicing(
     let root = tree.root_node();
 
     let mut replacements: Vec<(usize, usize, String)> = Vec::new();
-    collect_replacements(root, bytes, &indent, line_width, &mut replacements);
+    collect_replacements(
+        root,
+        bytes,
+        &indent,
+        line_width,
+        tab_width,
+        &mut replacements,
+    );
 
     if replacements.is_empty() {
         return source.to_string();
@@ -39,113 +46,133 @@ fn collect_replacements(
     bytes: &[u8],
     indent: &str,
     line_width: usize,
+    tab_width: usize,
     out: &mut Vec<(usize, usize, String)>,
 ) {
     match node.kind() {
         "start_tag" | "jsx_opening_element" | "self_closing_tag" | "jsx_self_closing_element" => {
-            if let Some(r) = format_tag(node, bytes, indent, line_width) {
-                out.push(r);
-            }
+            collect_data_attr_replacements(node, bytes, indent, line_width, tab_width, out);
         }
         _ => {
             for child in node.children(&mut node.walk()) {
-                collect_replacements(child, bytes, indent, line_width, out);
+                collect_replacements(child, bytes, indent, line_width, tab_width, out);
             }
         }
     }
 }
 
-// ── Tag formatting ────────────────────────────────────────────────────────
-
-/// Collect data-attrs, non-data-attrs, and tag metadata once, then decide
-/// whether to split. If splitting, build the reformatted tag.
-fn format_tag(
-    node: tree_sitter::Node,
+/// Collect individual data-attr replacement spans for a tag.
+/// Only data-* attributes are replaced; everything else stays untouched.
+fn collect_data_attr_replacements(
+    tag: tree_sitter::Node,
     bytes: &[u8],
     indent: &str,
     line_width: usize,
-) -> Option<(usize, usize, String)> {
-    let data = collect_data_attrs(node, bytes);
+    tab_width: usize,
+    out: &mut Vec<(usize, usize, String)>,
+) {
+    let data = collect_data_attrs(tag, bytes);
     if data.is_empty() {
-        return None;
+        return;
     }
 
-    let tag_name = find_tag_name(node, bytes).unwrap_or("");
-    let non_data = collect_non_data_attrs(node, &data, bytes);
-    let depth = depth_from_source(node.start_byte(), bytes);
-    let line_start = find_line_start(node.start_byte(), bytes);
-    let self_closing = bytes[node.start_byte()..node.end_byte()].ends_with(b"/>");
+    let depth = depth_from_source(tag.start_byte(), bytes, tab_width) + 1;
 
-    // Decide: split or not?
-    if !should_split_tag(&data, &non_data, tag_name, depth, line_width) {
-        return None;
+    // Decide if we should split data attrs or keep inline
+    if !should_split_data_attrs(&data, line_width) {
+        return;
     }
 
-    // Expand span to include leading whitespace so we own the indent
-    let leading = &bytes[line_start..node.start_byte()];
-    let start = if leading.iter().all(|b| b.is_ascii_whitespace()) {
-        line_start
-    } else {
-        node.start_byte()
-    };
-
-    let mut p = Printer::new(indent, depth);
-
-    // Opening tag
-    p.write("<");
-    p.write(tag_name);
-
-    // Non-data attrs inline
-    for a in &non_data {
-        p.write(" ");
-        p.write(a);
-    }
-
-    // Data attrs, one per line
+    // Build formatted data-attr lines
+    let mut formatted = Vec::with_capacity(data.len());
     for a in &data {
-        p.newline(depth + 1);
+        let mut p = Printer::new(indent, depth);
         p.write(&a.name);
         if let Some(ref v) = a.value {
             p.write("=");
-            format_value(&mut p, v, depth + 1, line_width);
+            format_value(&mut p, v, depth, line_width);
+        }
+        formatted.push(p.finish());
+    }
+
+    // Get the end byte of the last data attr's tree-sitter node
+    let last_end = find_attr_node_end(tag, &data);
+
+    // Replace: from whitespace before first data-attr, through end of tag.
+    // The formatted lines replace the data-attrs; trailing bytes (newline + indent + >)
+    // from source are copied verbatim.
+    let replace_start = data.first().unwrap().full_start_byte
+        - count_leading_ws(data.first().unwrap().full_start_byte, bytes);
+
+    let mut repl = String::new();
+    repl.push('\n');
+    for (i, line) in formatted.iter().enumerate() {
+        if i > 0 {
+            repl.push('\n');
+        }
+        repl.push_str(line);
+    }
+    // Append closing: if tag was multiline in source, copy verbatim;
+    // otherwise generate newline + indent + >
+    let tag_src = &bytes[tag.start_byte()..tag.end_byte()];
+    let was_multiline = tag_src.contains(&b'\n');
+    if was_multiline {
+        repl.push_str(std::str::from_utf8(&bytes[last_end..tag.end_byte()]).unwrap_or(""));
+    } else {
+        repl.push('\n');
+        for _ in 0..depth_from_source(tag.start_byte(), bytes, tab_width) {
+            repl.push_str(indent);
+        }
+        let tag_end = tag.end_byte();
+        if tag_end >= 2 && bytes[tag_end - 2] == b'/' {
+            repl.push_str("/>");
+        } else {
+            repl.push('>');
         }
     }
 
-    if self_closing {
-        p.write(" />");
-    } else {
-        p.write(">");
-    }
-
-    Some((start, node.end_byte(), p.finish()))
+    out.push((replace_start, tag.end_byte(), repl));
 }
 
-/// Returns true when the tag should be reformatted (split across lines).
-fn should_split_tag(
-    data: &[AttrInfo],
-    non_data: &[String],
-    tag_name: &str,
-    depth: usize,
-    line_width: usize,
-) -> bool {
+/// Count consecutive whitespace bytes before `pos` (scanning backwards).
+fn count_leading_ws(pos: usize, bytes: &[u8]) -> usize {
+    let mut count = 0;
+    let mut p = pos;
+    while p > 0 && bytes[p - 1].is_ascii_whitespace() {
+        p -= 1;
+        count += 1;
+    }
+    count
+}
+
+/// Should data attrs be split to separate lines?
+fn should_split_data_attrs(data: &[AttrInfo], line_width: usize) -> bool {
     // Always split if any value needs multi-line formatting
     if data.iter().any(|a| value_needs_split(&a.value, line_width)) {
         return true;
     }
-
-    // With < 2 data attrs, no reason to split
+    // Need at least 2 data attrs to consider splitting
     if data.len() < 2 {
         return false;
     }
-
-    // Compute total width if everything were on one line
-    let data_w: usize = data
+    // Check if total width of data attrs exceeds line width
+    let total: usize = data
         .iter()
-        .map(|a| 1 + a.name.len() + a.value.as_ref().map_or(0, |v| 1 + v.trim().len()))
+        .map(|a| 1 + a.name.len() + a.value.as_ref().map_or(0, |v| 1 + v.len()))
         .sum();
-    let non_data_w: usize = non_data.iter().map(|a| a.len() + 1).sum();
-    let total = depth + 1 + tag_name.len() + non_data_w + data_w + 1; // indent + <tag ... >
     total > line_width
+}
+
+/// Get the end byte of the last data attr's tree-sitter node.
+fn find_attr_node_end(tag: tree_sitter::Node, data: &[AttrInfo]) -> usize {
+    let last = data.last().unwrap();
+    for child in tag.children(&mut tag.walk()) {
+        if child.start_byte() == last.full_start_byte {
+            return child.end_byte();
+        }
+    }
+    // Fallback: use tag end
+    tag.end_byte()
 }
 
 // ── Printer ────────────────────────────────────────────────────────────────
@@ -190,19 +217,17 @@ impl<'a> Printer<'a> {
 fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
     let trimmed = value.trim();
     let inner = unwrap_value(trimmed).trim();
+    let (open_quote, close_quote) = quote_wrap(trimmed);
     let (is_obj, is_arr) = classify_inner(trimmed, inner);
 
     if is_obj || is_arr {
         let content = &inner[1..inner.len() - 1];
         let items = non_empty_parts(split_top_level(content, &[',']));
-        let (open, close) = quote_wrap(trimmed);
-
         if items.len() <= 1 && trimmed.len() <= line_width {
             p.write(trimmed);
             return;
         }
-
-        p.write(open);
+        p.write(open_quote);
         p.write(if is_obj { "{" } else { "[" });
         for item in &items {
             p.newline(depth + 1);
@@ -211,22 +236,21 @@ fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
         }
         p.newline(depth);
         p.write(if is_obj { "}" } else { "]" });
-        p.write(close);
+        p.write(close_quote);
     } else {
         let parts = non_empty_parts(split_top_level(inner, &[';', ',']));
         if parts.len() <= 1 && trimmed.len() <= line_width {
             p.write(trimmed);
             return;
         }
-        let (open, close) = quote_wrap(trimmed);
-        p.write(open);
+        p.write(open_quote);
         for stmt in &parts {
             p.newline(depth + 1);
             p.write(stmt.trim());
             p.write(";");
         }
         p.newline(depth);
-        p.write(close);
+        p.write(close_quote);
     }
 }
 
@@ -263,12 +287,15 @@ fn quote_wrap(trimmed: &str) -> (&str, &str) {
 
 // ── Source helpers ─────────────────────────────────────────────────────────
 
-fn depth_from_source(start_byte: usize, bytes: &[u8]) -> usize {
+fn depth_from_source(start_byte: usize, bytes: &[u8], tab_width: usize) -> usize {
     let line_start = find_line_start(start_byte, bytes);
-    bytes[line_start..start_byte]
-        .iter()
-        .filter(|&&b| b == b'\t')
-        .count()
+    let leading = &bytes[line_start..start_byte];
+    let tabs = leading.iter().filter(|&&b| b == b'\t').count();
+    if tabs > 0 {
+        return tabs;
+    }
+    let spaces = leading.iter().take_while(|&&b| b == b' ').count();
+    spaces / tab_width
 }
 
 fn find_line_start(mut pos: usize, bytes: &[u8]) -> usize {
@@ -279,18 +306,6 @@ fn find_line_start(mut pos: usize, bytes: &[u8]) -> usize {
         }
     }
     0
-}
-
-fn find_tag_name<'a>(node: tree_sitter::Node<'a>, bytes: &'a [u8]) -> Option<&'a str> {
-    for child in node.children(&mut node.walk()) {
-        match child.kind() {
-            "tag_name" | "jsx_tag_name" | "jsx_identifier" | "identifier" => {
-                return child.utf8_text(bytes).ok();
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 // ── Value analysis ─────────────────────────────────────────────────────────
@@ -363,21 +378,6 @@ fn collect_data_attrs(node: tree_sitter::Node, bytes: &[u8]) -> Vec<AttrInfo> {
             value,
             full_start_byte: child.start_byte(),
         });
-    }
-    out
-}
-
-fn collect_non_data_attrs(tag: tree_sitter::Node, data: &[AttrInfo], bytes: &[u8]) -> Vec<String> {
-    let data_starts: Vec<usize> = data.iter().map(|a| a.full_start_byte).collect();
-    let mut out = Vec::new();
-    for child in tag.children(&mut tag.walk()) {
-        if matches!(child.kind(), "attribute" | "jsx_attribute")
-            && !data_starts.contains(&child.start_byte())
-        {
-            if let Ok(t) = child.utf8_text(bytes) {
-                out.push(t.to_string());
-            }
-        }
     }
     out
 }

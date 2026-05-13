@@ -19,7 +19,7 @@ fn main() {
         std::io::stdin()
             .read_to_string(&mut input)
             .expect("Failed to read stdin");
-        let output = format_text(&input, &args);
+        let output = format_text(&input, &args, "");
         print!("{output}");
         return;
     }
@@ -42,8 +42,8 @@ fn main() {
     }
 }
 
-fn format_text(input: &str, args: &Args) -> String {
-    parser::parse_and_format(input, args.line_width, args.use_spaces, args.tab_width)
+fn format_text(input: &str, args: &Args, ext: &str) -> String {
+    parser::parse_and_format(input, args.line_width, args.use_spaces, args.tab_width, ext)
 }
 
 fn format_file(path: &str, args: &Args) {
@@ -54,7 +54,11 @@ fn format_file(path: &str, args: &Args) {
             return;
         }
     };
-    let output = format_text(&input, args);
+    let ext = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let output = format_text(&input, args, ext);
 
     if args.check {
         if input != output {

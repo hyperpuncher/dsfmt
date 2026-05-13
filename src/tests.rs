@@ -1,5 +1,5 @@
 fn fmt(input: &str, width: usize) -> String {
-    crate::parser::parse_and_format(input, width, false, 4)
+    crate::parser::parse_and_format(input, width, false, 4, "")
 }
 
 const W: usize = 90;
@@ -94,23 +94,38 @@ fn preserves_parent_structure() {
 }
 
 #[test]
+fn preserves_non_data_attr_multiline_layout() {
+    let input = "<button\n    class=\"btn\"\n    data-on:click=\"a\"\n    data-bind:value=\"b\">\n";
+    let output = fmt(input, 90);
+    assert!(
+        !output.contains("<button class"),
+        "should not collapse: {output}"
+    );
+    assert!(
+        output.contains("<button\n"),
+        "should stay multiline: {output}"
+    );
+    assert!(
+        output.contains("\n    class="),
+        "class on own line: {output}"
+    );
+}
+
+#[test]
 fn two_attrs_split_narrow() {
     // Too wide at width 40, must split
     let input = r#"<div data-bind:value="$foo" data-show="$visible">hi</div>"#;
     let output = fmt(input, 40);
     assert_eq!(
         output,
-        "<div\n\tdata-bind:value=\"$foo\"\n\tdata-show=\"$visible\">hi</div>"
+        "<div\n\tdata-bind:value=\"$foo\"\n\tdata-show=\"$visible\"\n>hi</div>"
     );
 }
 
 #[cfg(test)]
 mod bench {
+    use super::fmt;
     use std::time::Instant;
-
-    fn fmt(input: &str, width: usize) -> String {
-        crate::parser::parse_and_format(input, width, false, 4)
-    }
 
     fn load_fixture(name: &str) -> String {
         std::fs::read_to_string(format!("tests/fixtures/{name}")).unwrap()
