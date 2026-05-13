@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<title>Test</title>
+</head>
+<body>
+	<div
+		data-signals="{percentage: 0, contents: 'bad apple frames go here', foo: 'bar', baz: 'qux', yo: 'mama'}"
+		data-effect={`$percentage = Math.min(100, Math.max(0, $percentage)); $contents = $contents.toUpperCase();`}
+	>
+		<input data-bind="percentage" />
+		<button data-on:click="$percentage = 50">Set 50</button>
+	</div>
+</body>
+</html>

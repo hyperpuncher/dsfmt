@@ -1,0 +1,13 @@
+[package]
+name = "dsfmt"
+version = "0.1.0"
+edition = "2021"
+description = "Datastar attribute formatter — reflows data-* attributes and template expressions"
+
+[dependencies]
+tree-sitter = "0.26"
+tree-sitter-html = "0.23"
+tree-sitter-typescript = "0.23"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+ignore = "0.4"
