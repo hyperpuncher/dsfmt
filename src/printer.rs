@@ -62,7 +62,8 @@ fn collect_replacements(
 }
 
 /// Collect individual data-attr replacement spans for a tag.
-/// Only data-* attributes are replaced; everything else stays untouched.
+/// Each data-* attr gets its own replacement span.
+/// Non-data attrs between data-attrs are preserved byte-for-byte.
 fn collect_data_attr_replacements(
     tag: tree_sitter::Node,
     bytes: &[u8],
@@ -78,60 +79,52 @@ fn collect_data_attr_replacements(
 
     let depth = depth_from_source(tag.start_byte(), bytes, tab_width) + 1;
 
-    // Decide if we should split data attrs or keep inline
     if !should_split_data_attrs(&data, line_width) {
         return;
     }
 
-    // Build formatted data-attr lines
-    let mut formatted = Vec::with_capacity(data.len());
-    for a in &data {
+    let tag_src = &bytes[tag.start_byte()..tag.end_byte()];
+    let was_multiline = tag_src.contains(&b'\n');
+
+    for (i, a) in data.iter().enumerate() {
         let mut p = Printer::new(indent, depth);
         p.write(&a.name);
         if let Some(ref v) = a.value {
             p.write("=");
             format_value(&mut p, v, depth, line_width);
         }
-        formatted.push(p.finish());
-    }
+        let formatted = p.finish();
 
-    // Get the end byte of the last data attr's tree-sitter node
-    let last_end = find_attr_node_end(tag, &data);
+        let replace_start = a.full_start_byte - count_leading_ws(a.full_start_byte, bytes);
+        let attr_end = find_attr_node_end_single(tag, a);
 
-    // Replace: from whitespace before first data-attr, through end of tag.
-    // The formatted lines replace the data-attrs; trailing bytes (newline + indent + >)
-    // from source are copied verbatim.
-    let replace_start = data.first().unwrap().full_start_byte
-        - count_leading_ws(data.first().unwrap().full_start_byte, bytes);
-
-    let mut repl = String::new();
-    repl.push('\n');
-    for (i, line) in formatted.iter().enumerate() {
-        if i > 0 {
-            repl.push('\n');
-        }
-        repl.push_str(line);
-    }
-    // Append closing: if tag was multiline in source, copy verbatim;
-    // otherwise generate newline + indent + >
-    let tag_src = &bytes[tag.start_byte()..tag.end_byte()];
-    let was_multiline = tag_src.contains(&b'\n');
-    if was_multiline {
-        repl.push_str(std::str::from_utf8(&bytes[last_end..tag.end_byte()]).unwrap_or(""));
-    } else {
+        let mut repl = String::new();
         repl.push('\n');
-        for _ in 0..depth_from_source(tag.start_byte(), bytes, tab_width) {
-            repl.push_str(indent);
-        }
-        let tag_end = tag.end_byte();
-        if tag_end >= 2 && bytes[tag_end - 2] == b'/' {
-            repl.push_str("/>");
-        } else {
-            repl.push('>');
-        }
-    }
+        repl.push_str(&formatted);
 
-    out.push((replace_start, tag.end_byte(), repl));
+        let replace_end = if i == data.len() - 1 {
+            if was_multiline {
+                repl.push_str(std::str::from_utf8(&bytes[attr_end..tag.end_byte()]).unwrap_or(""));
+                tag.end_byte()
+            } else {
+                repl.push('\n');
+                for _ in 0..depth_from_source(tag.start_byte(), bytes, tab_width) {
+                    repl.push_str(indent);
+                }
+                let tag_end = tag.end_byte();
+                if tag_end >= 2 && bytes[tag_end - 2] == b'/' {
+                    repl.push_str("/>");
+                } else {
+                    repl.push('>');
+                }
+                tag.end_byte()
+            }
+        } else {
+            attr_end
+        };
+
+        out.push((replace_start, replace_end, repl));
+    }
 }
 
 /// Count consecutive whitespace bytes before `pos` (scanning backwards).
@@ -163,15 +156,13 @@ fn should_split_data_attrs(data: &[AttrInfo], line_width: usize) -> bool {
     total > line_width
 }
 
-/// Get the end byte of the last data attr's tree-sitter node.
-fn find_attr_node_end(tag: tree_sitter::Node, data: &[AttrInfo]) -> usize {
-    let last = data.last().unwrap();
+/// Get the end byte of a single attr's tree-sitter node.
+fn find_attr_node_end_single(tag: tree_sitter::Node, attr: &AttrInfo) -> usize {
     for child in tag.children(&mut tag.walk()) {
-        if child.start_byte() == last.full_start_byte {
+        if child.start_byte() == attr.full_start_byte {
             return child.end_byte();
         }
     }
-    // Fallback: use tag end
     tag.end_byte()
 }
 
