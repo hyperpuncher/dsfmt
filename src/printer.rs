@@ -229,6 +229,30 @@ fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
         p.write(close_quote);
     } else {
         let parts = non_empty_parts(split_top_level(inner, &[';', ',']));
+        if parts.len() <= 1 {
+            // Try splitting at logical operators
+            let expr_parts = split_at_operators(inner);
+            if expr_parts.len() <= 1 && trimmed.len() <= line_width {
+                p.write(trimmed);
+                return;
+            }
+            if expr_parts.len() > 1 {
+                p.write(open_quote);
+                for (i, (part, op)) in expr_parts.iter().enumerate() {
+                    if i > 0 {
+                        p.newline(depth + 1);
+                    }
+                    p.write(part);
+                    if !op.is_empty() {
+                        p.write(" ");
+                        p.write(op);
+                    }
+                }
+                p.newline(depth);
+                p.write(close_quote);
+                return;
+            }
+        }
         if parts.len() <= 1 && trimmed.len() <= line_width {
             p.write(trimmed);
             return;
@@ -372,6 +396,56 @@ fn unwrap_value(v: &str) -> &str {
         _ if v.starts_with('`') && v.ends_with('`') => &v[1..v.len() - 1],
         _ => v,
     }
+}
+
+/// Split a bare expression at `&&`, `||`, `??` (depth-aware).
+/// Returns (part, trailing_operator) pairs.
+fn split_at_operators(content: &str) -> Vec<(&str, &str)> {
+    let mut parts: Vec<(&str, &str)> = Vec::new();
+    let mut depth = 0u32;
+    let mut last = 0;
+    let bytes = content.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match c {
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => depth = depth.saturating_sub(1),
+            b'&' | b'|' | b'?' if depth == 0 => {
+                let op = match (c, bytes.get(i + 1)) {
+                    (b'&', Some(b'&')) => "&&",
+                    (b'|', Some(b'|')) => "||",
+                    (b'?', Some(b'?')) => "??",
+                    _ => {
+                        i += 1;
+                        continue;
+                    }
+                };
+                let part = content[last..i].trim();
+                parts.push((part, op));
+                i += 2;
+                last = i;
+                continue;
+            }
+            b'"' | b'\'' | b'`' if depth == 0 => {
+                let quote = c;
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    if bytes[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let last_part = content[last..].trim();
+    if !last_part.is_empty() || parts.is_empty() {
+        parts.push((last_part, ""));
+    }
+    parts
 }
 
 fn split_top_level<'a>(content: &'a str, seps: &[char]) -> Vec<&'a str> {
