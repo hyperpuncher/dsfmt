@@ -272,10 +272,38 @@ fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
 fn format_object_item(p: &mut Printer, item: &str, depth: usize, line_width: usize) {
     let item = item.trim();
     let colon = find_top_level_colon(item);
+    // If no key:value colon found, treat as plain value (array element)
     let (key, value) = match colon {
         Some(pos) => (item[..pos].trim(), item[pos + 1..].trim()),
         None => {
-            p.write(item);
+            // Plain value — check if it's a nested object/array to recurse into
+            let trimmed_item = item.trim();
+            if (trimmed_item.starts_with('{') && trimmed_item.ends_with('}'))
+                || (trimmed_item.starts_with('[') && trimmed_item.ends_with(']'))
+            {
+                let is_obj = trimmed_item.starts_with('{');
+                let inner = &trimmed_item[1..trimmed_item.len() - 1];
+                let sub_items = non_empty_parts(split_top_level(inner, &[',']));
+                let has_nested = sub_items.iter().any(|s| {
+                    let s = s.trim();
+                    (s.starts_with('{') && s.ends_with('}'))
+                        || (s.starts_with('[') && s.ends_with(']'))
+                });
+                let total_len = trimmed_item.len() + depth * 4;
+                if !has_nested && total_len <= line_width {
+                    p.write(trimmed_item);
+                } else {
+                    p.write(if is_obj { "{" } else { "[" });
+                    for si in &sub_items {
+                        p.newline(depth + 1);
+                        format_object_item(p, si, depth + 1, line_width);
+                    }
+                    p.newline(depth);
+                    p.write(if is_obj { "}" } else { "]" });
+                }
+            } else {
+                p.write(item);
+            }
             p.write(",");
             return;
         }
@@ -291,7 +319,13 @@ fn format_object_item(p: &mut Printer, item: &str, depth: usize, line_width: usi
         let inner = &value[1..value.len() - 1];
         let nested_items = non_empty_parts(split_top_level(inner, &[',']));
         let total_len = item.len() + depth * 4;
-        if nested_items.len() <= 1 && total_len <= line_width {
+        // Check if items contain nested objects/arrays
+        let has_sub_compound = nested_items.iter().any(|s| {
+            let s = s.trim();
+            (s.starts_with('{') && s.ends_with('}')) || (s.starts_with('[') && s.ends_with(']'))
+        });
+        // Keep simple arrays/objects inline if they fit
+        if (!has_sub_compound || nested_items.len() <= 1) && total_len <= line_width {
             p.write(value);
         } else {
             p.write(if is_obj { "{" } else { "[" });
