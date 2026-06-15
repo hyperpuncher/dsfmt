@@ -1,6 +1,6 @@
 [package]
 name = "dsfmt"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Datastar attribute formatter — reflows data-* attributes and template expressions"
 
