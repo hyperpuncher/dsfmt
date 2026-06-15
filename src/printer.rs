@@ -238,10 +238,8 @@ fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
             }
             if expr_parts.len() > 1 {
                 p.write(open_quote);
-                for (i, (part, op)) in expr_parts.iter().enumerate() {
-                    if i > 0 {
-                        p.newline(depth + 1);
-                    }
+                for (part, op) in expr_parts.iter() {
+                    p.newline(depth + 1);
                     p.write(part);
                     if !op.is_empty() {
                         p.write(" ");
