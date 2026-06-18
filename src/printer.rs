@@ -484,16 +484,30 @@ fn split_top_level<'a>(content: &'a str, seps: &[char]) -> Vec<&'a str> {
     let mut parts: Vec<&'a str> = Vec::new();
     let mut depth = 0u32;
     let mut last = 0;
-    for (i, c) in content.char_indices() {
+    let bytes = content.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
         match c {
-            '(' | '{' | '[' => depth += 1,
-            ')' | '}' | ']' => depth = depth.saturating_sub(1),
-            _ if depth == 0 && seps.contains(&c) => {
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => depth = depth.saturating_sub(1),
+            b'"' | b'\'' | b'`' if depth == 0 => {
+                let quote = c;
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    if bytes[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+            }
+            _ if depth == 0 && seps.contains(&(c as char)) => {
                 parts.push(&content[last..i]);
-                last = i + c.len_utf8();
+                last = i + (c as char).len_utf8();
             }
             _ => {}
         }
+        i += 1;
     }
     parts.push(&content[last..]);
     parts
