@@ -47,8 +47,11 @@ fn format_text(input: &str, args: &Args, ext: &str) -> String {
 }
 
 fn format_file(path: &str, args: &Args) {
-    let input = match std::fs::read_to_string(path) {
-        Ok(s) => s,
+    let input = match std::fs::read(path) {
+        Ok(data) => match String::from_utf8(data) {
+            Ok(s) => s,
+            Err(_) => return, // skip binary files
+        },
         Err(e) => {
             eprintln!("dsfmt: {path}: {e}");
             return;
