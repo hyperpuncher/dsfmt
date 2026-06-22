@@ -47,6 +47,16 @@ fn format_text(input: &str, args: &Args, ext: &str) -> String {
 }
 
 fn format_file(path: &str, args: &Args) {
+    // Skip unsupported extensions (safety net for shell globs like `dsfmt *`)
+    if !std::path::Path::new(path)
+        .extension()
+        .is_some_and(|e| match e.to_str() {
+            Some("html" | "htm" | "tsx" | "jsx" | "templ" | "heex") => true,
+            _ => path.ends_with(".blade.php"),
+        })
+    {
+        return;
+    }
     let input = match std::fs::read(path) {
         Ok(data) => match String::from_utf8(data) {
             Ok(s) => s,
