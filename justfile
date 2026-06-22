@@ -16,3 +16,6 @@ fix:
 
 test:
     cargo test --all-targets
+
+update:
+    cargo update
