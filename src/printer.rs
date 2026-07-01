@@ -232,10 +232,6 @@ fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
         if parts.len() <= 1 {
             // Try splitting at logical operators
             let expr_parts = split_at_operators(inner);
-            if expr_parts.len() <= 1 && trimmed.len() <= line_width {
-                p.write(trimmed);
-                return;
-            }
             if expr_parts.len() > 1 {
                 p.write(open_quote);
                 for (part, op) in expr_parts.iter() {
@@ -250,11 +246,11 @@ fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
                 p.write(close_quote);
                 return;
             }
-        }
-        if parts.len() <= 1 && trimmed.len() <= line_width {
+            // No ;/,/&&/||/?? to split — write inline (JSX expressions, long fn calls, etc.)
             p.write(trimmed);
             return;
         }
+        // Multi-part: format as template statements
         p.write(open_quote);
         for stmt in &parts {
             p.newline(depth + 1);
