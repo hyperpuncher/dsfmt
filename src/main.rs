@@ -90,8 +90,8 @@ fn format_file(path: &str, args: &Args) {
 }
 
 fn format_dir(dir: &str, args: &Args) {
-    use ignore::types::TypesBuilder;
     use ignore::WalkBuilder;
+    use ignore::types::TypesBuilder;
     let mut types = TypesBuilder::new();
     types.add("html", "*.html").unwrap();
     types.add("jsx", "*.jsx").unwrap();

@@ -553,7 +553,7 @@ fn extract_attr_name(node: tree_sitter::Node, bytes: &[u8]) -> String {
                 name.push_str(child.utf8_text(bytes).unwrap_or(""));
             }
             "=" | "jsx_expression" | "string" | "template_string" | "quoted_attribute_value" => {
-                break
+                break;
             }
             _ => {}
         }
