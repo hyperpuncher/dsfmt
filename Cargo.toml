@@ -11,6 +11,7 @@ tree-sitter-typescript = "0.23"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 ignore = "0.4"
+tree-sitter-datastar = { git = "https://github.com/hyperpuncher/tree-sitter-datastar", version = "0.1.0" }
 
 [profile.release]
 opt-level = 3

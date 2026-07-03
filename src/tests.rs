@@ -122,6 +122,33 @@ fn two_attrs_split_narrow() {
     );
 }
 
+#[test]
+fn formats_parser_backed_current_attrs() {
+    let input = r#"<div data-match-media:dark="(prefers-color-scheme: dark)" data-signals:user.name="'Ada'">hi</div>"#;
+    let output = fmt(input, 40);
+    assert_eq!(
+        output,
+        "<div\n\tdata-match-media:dark=\"(prefers-color-scheme: dark)\"\n\tdata-signals:user.name=\"'Ada'\"\n>hi</div>"
+    );
+}
+
+#[test]
+fn formats_rocket_structural_attrs() {
+    let input = r#"<template data-if="$open" data-for="item in $items"></template>"#;
+    let output = fmt(input, 40);
+    assert_eq!(
+        output,
+        "<template\n\tdata-if=\"$open\"\n\tdata-for=\"item in $items\"\n></template>"
+    );
+}
+
+#[test]
+fn ignores_non_datastar_data_attrs() {
+    let input = r#"<div data-testid="save" data-foo="bar">Save</div>"#;
+    let output = fmt(input, 20);
+    assert_eq!(output, input);
+}
+
 #[cfg(test)]
 mod bench {
     use super::fmt;

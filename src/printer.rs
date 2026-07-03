@@ -519,6 +519,7 @@ struct AttrInfo {
 
 fn collect_data_attrs(node: tree_sitter::Node, bytes: &[u8]) -> Vec<AttrInfo> {
     let children: Vec<_> = node.children(&mut node.walk()).collect();
+    let mut datastar_parser = datastar_attr_parser();
     let mut out = Vec::new();
 
     for i in 0..children.len() {
@@ -527,7 +528,7 @@ fn collect_data_attrs(node: tree_sitter::Node, bytes: &[u8]) -> Vec<AttrInfo> {
             continue;
         }
         let name = extract_attr_name(child, bytes);
-        if !is_data_attr(&name) {
+        if !is_data_attr(&name, datastar_parser.as_mut()) {
             continue;
         }
         let value =
@@ -566,30 +567,84 @@ fn extract_attr_name(node: tree_sitter::Node, bytes: &[u8]) -> String {
     name
 }
 
-fn is_data_attr(name: &str) -> bool {
+fn datastar_attr_parser() -> Option<tree_sitter::Parser> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_datastar::LANGUAGE.into())
+        .ok()?;
+    Some(parser)
+}
+
+fn is_data_attr(name: &str, parser: Option<&mut tree_sitter::Parser>) -> bool {
+    let Some(plugin) = parse_datastar_plugin_name(name, parser) else {
+        return false;
+    };
+
+    is_known_datastar_plugin(plugin)
+}
+
+fn parse_datastar_plugin_name<'a>(
+    name: &'a str,
+    parser: Option<&mut tree_sitter::Parser>,
+) -> Option<&'a str> {
+    if !name.starts_with("data-") {
+        return None;
+    }
+
+    let parser = parser?;
+    let tree = parser.parse(name, None)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+
+    let attr = root.named_child(0)?;
+    if attr.kind() != "datastar_attribute"
+        || attr.start_byte() != 0
+        || attr.end_byte() != name.len()
+    {
+        return None;
+    }
+
+    for child in attr.named_children(&mut attr.walk()) {
+        if child.kind() == "plugin_name" {
+            return child.utf8_text(name.as_bytes()).ok();
+        }
+    }
+
+    None
+}
+
+fn is_known_datastar_plugin(plugin: &str) -> bool {
     const KNOWN: &[&str] = &[
-        "data-bind",
-        "data-on",
-        "data-show",
-        "data-text",
-        "data-html",
-        "data-class",
-        "data-attr",
-        "data-indicator",
-        "data-persist",
-        "data-ref",
-        "data-store",
-        "data-computed",
-        "data-effect",
-        "data-signals",
-        "data-intersects",
-        "data-scroll-into-view",
-        "data-view-transition",
-        "data-header",
-        "data-replace-url",
-        "data-style",
+        "attr",
+        "bind",
+        "class",
+        "computed",
+        "effect",
+        "else",
+        "else-if",
+        "for",
+        "header",
+        "html",
+        "if",
+        "indicator",
+        "intersects",
+        "match-media",
+        "on",
+        "persist",
+        "ref",
+        "replace-url",
+        "scroll-into-view",
+        "show",
+        "signals",
+        "store",
+        "style",
+        "text",
+        "view-transition",
     ];
-    name.starts_with("data-") && KNOWN.iter().any(|p| name.starts_with(p))
+
+    KNOWN.contains(&plugin)
 }
 
 fn find_attr_value(node: tree_sitter::Node, bytes: &[u8]) -> Option<String> {
