@@ -1,6 +1,6 @@
 # dsfmt
 
-Datastar attribute formatter — reflows `data-*` attributes and template expressions in HTML, JSX, and TSX files.
+Datastar attribute formatter — reflows Datastar `data-*` attributes and formats Datastar expressions in HTML, JSX, and TSX files.
 
 ## Install
 
@@ -39,11 +39,15 @@ cat file.html | dsfmt
 
 ## What it does
 
-- Splits elements with 2+ `data-*` attributes across multiple lines (when they don't fit on one)
+- Detects Datastar attributes with `tree-sitter-datastar`
+- Ignores generic non-Datastar attributes like `data-testid`
+- Splits elements with 2+ Datastar attributes across multiple lines when they don't fit
+- Formats inline Datastar expressions with OXC where possible
+- Trims outer whitespace in Datastar attribute values
 - Splits multi-statement template literal expressions (`data-effect={\`a=1; b=2\`}`)
 - Splits object/array values in quoted attributes (`data-signals="{a:1, b:2}"`)
-- Normalizes `,` to `;` in template statements
-- Preserves everything else byte-for-byte
+- Normalizes top-level `,` to `;` in template statements
+- Preserves non-Datastar markup/source text byte-for-byte where possible
 
 ## Supported file types
 
