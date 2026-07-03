@@ -80,6 +80,7 @@ fn collect_data_attr_replacements(
     let depth = depth_from_source(tag.start_byte(), bytes, tab_width) + 1;
 
     if !should_split_data_attrs(&data, line_width) {
+        collect_inline_value_replacements(tag, bytes, line_width, out);
         return;
     }
 
@@ -124,6 +125,39 @@ fn collect_data_attr_replacements(
         };
 
         out.push((replace_start, replace_end, repl));
+    }
+}
+
+fn collect_inline_value_replacements(
+    tag: tree_sitter::Node,
+    bytes: &[u8],
+    line_width: usize,
+    out: &mut Vec<(usize, usize, String)>,
+) {
+    for attr in collect_data_attrs(tag, bytes) {
+        let Some(value) = attr.value.as_deref() else {
+            continue;
+        };
+        let formatted_value = ValueParts::parse(value.trim()).inline(line_width);
+        if formatted_value == value.trim() || formatted_value.contains('\n') {
+            continue;
+        }
+
+        let attr_end = find_attr_node_end_single(tag, &attr);
+        let Ok(attr_src) = std::str::from_utf8(&bytes[attr.full_start_byte..attr_end]) else {
+            continue;
+        };
+        if !attr_src.contains('=') {
+            continue;
+        }
+
+        let replacement = format!("{}={}", attr.name, formatted_value);
+        let current = attr_src.trim();
+        if replacement != current {
+            out.push((attr.full_start_byte, attr_end, replacement));
+        } else if attr_src != current {
+            out.push((attr.full_start_byte, attr_end, current.to_string()));
+        }
     }
 }
 
@@ -215,7 +249,7 @@ fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
         let items = parser_collection_items(inner)
             .unwrap_or_else(|| non_empty_parts(split_top_level(content, &[','])));
         if items.len() <= 1 && trimmed.len() <= line_width {
-            p.write(trimmed);
+            write_inline_value(p, &value.inline(line_width), depth);
             return;
         }
         p.write(value.open);
@@ -249,7 +283,7 @@ fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
                 return;
             }
             // No ;/,/&&/||/?? to split — write inline (JSX expressions, long fn calls, etc.)
-            p.write(trimmed);
+            write_inline_value(p, &value.inline(line_width), depth);
             return;
         }
         // Multi-part: format as template statements
@@ -261,6 +295,21 @@ fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
         }
         p.newline(depth);
         p.write(value.close);
+    }
+}
+
+fn write_inline_value(p: &mut Printer, value: &str, depth: usize) {
+    if !value.contains('\n') {
+        p.write(value);
+        return;
+    }
+
+    for (i, line) in value.lines().enumerate() {
+        if i > 0 {
+            let oxc_level = line.chars().take_while(|c| *c == ' ').count() / 2;
+            p.newline(depth + oxc_level);
+        }
+        p.write(line.trim_start());
     }
 }
 
@@ -387,7 +436,7 @@ fn find_line_start(mut pos: usize, bytes: &[u8]) -> usize {
 fn value_needs_split(value: &Option<String>, line_width: usize) -> bool {
     let Some(v) = value else { return false };
     let trimmed = v.trim();
-    if trimmed.len() > line_width {
+    if trimmed.len() > line_width || trimmed.contains('\n') {
         return true;
     }
     let inner = ValueParts::parse(trimmed).inner.trim();
@@ -595,9 +644,9 @@ impl<'a> ValueParts<'a> {
     fn parse(value: &'a str) -> Self {
         match value {
             _ if value.starts_with("{\"") && value.ends_with("\"}") => Self {
-                inner: &value[2..value.len() - 2],
-                open: "{\"",
-                close: "\"}",
+                inner: &value[1..value.len() - 1],
+                open: "{",
+                close: "}",
                 wrapped: true,
             },
             _ if value.starts_with("{`") && value.ends_with("`}") => Self {
@@ -640,6 +689,166 @@ impl<'a> ValueParts<'a> {
     fn is_wrapped_array(&self) -> bool {
         self.wrapped && self.inner.starts_with('[') && self.inner.ends_with(']')
     }
+
+    fn inline(&self, line_width: usize) -> String {
+        let inner = self.inner.trim();
+        let inner = format_oxc_expression(inner, line_width).unwrap_or_else(|| inner.to_string());
+        format!("{}{}{}", self.open, inner, self.close)
+    }
+}
+
+fn format_oxc_expression(expr: &str, line_width: usize) -> Option<String> {
+    if expr.is_empty() || has_datastar_only_signal_identifier(expr) {
+        return None;
+    }
+
+    let prepared = replace_datastar_actions(expr)?;
+    let wrapped = wrap_oxc_expression(&prepared.code);
+
+    let allocator = oxc_allocator::Allocator::default();
+    let options = oxc_formatter::JsFormatOptions {
+        quote_style: oxc_formatter::QuoteStyle::Single,
+        line_width: oxc_formatter_core::LineWidth::try_from(line_width.clamp(
+            oxc_formatter_core::LineWidth::MIN as usize,
+            oxc_formatter_core::LineWidth::MAX as usize,
+        ) as u16)
+        .ok()?,
+        ..Default::default()
+    };
+
+    let formatted = oxc_formatter::format(
+        &allocator,
+        &wrapped.code,
+        oxc_span::SourceType::mjs(),
+        options,
+        None,
+    )
+    .ok()?;
+    let printed = formatted.print().ok()?.into_code();
+    let inner = unwrap_oxc_expression(printed.trim(), wrapped.kind)?;
+
+    Some(restore_datastar_actions(inner, &prepared.actions))
+}
+
+struct WrappedExpression {
+    code: String,
+    kind: WrappedExpressionKind,
+}
+
+#[derive(Clone, Copy)]
+enum WrappedExpressionKind {
+    ExpressionStatement,
+    ConstInitializer,
+}
+
+fn wrap_oxc_expression(expr: &str) -> WrappedExpression {
+    if expression_statement_is_safe(expr) {
+        WrappedExpression {
+            code: format!("{expr};"),
+            kind: WrappedExpressionKind::ExpressionStatement,
+        }
+    } else {
+        WrappedExpression {
+            code: format!("const __dsfmt = {expr};"),
+            kind: WrappedExpressionKind::ConstInitializer,
+        }
+    }
+}
+
+fn unwrap_oxc_expression(code: &str, kind: WrappedExpressionKind) -> Option<&str> {
+    match kind {
+        WrappedExpressionKind::ExpressionStatement => {
+            Some(code.strip_suffix(';').unwrap_or(code).trim())
+        }
+        WrappedExpressionKind::ConstInitializer => code
+            .strip_prefix("const __dsfmt = ")?
+            .strip_suffix(';')
+            .map(str::trim),
+    }
+}
+
+fn expression_statement_is_safe(expr: &str) -> bool {
+    let trimmed = expr.trim_start();
+    !(trimmed.starts_with('{') || trimmed.starts_with("function") || trimmed.starts_with("class"))
+}
+
+struct PreparedExpression {
+    code: String,
+    actions: Vec<(String, String)>,
+}
+
+fn replace_datastar_actions(expr: &str) -> Option<PreparedExpression> {
+    let mut code = String::with_capacity(expr.len());
+    let mut actions = Vec::new();
+    let mut chars = expr.char_indices().peekable();
+
+    while let Some((idx, ch)) = chars.next() {
+        if ch != '@' {
+            code.push(ch);
+            continue;
+        }
+
+        let &(_, first) = chars.peek()?;
+        if !is_js_ident_start(first) {
+            return None;
+        }
+
+        let start = idx + ch.len_utf8();
+        let mut end = start;
+        while let Some(&(next_idx, next)) = chars.peek() {
+            if !is_js_ident_continue(next) {
+                break;
+            }
+            chars.next();
+            end = next_idx + next.len_utf8();
+        }
+
+        let action = &expr[start..end];
+        let placeholder = format!("__dsfmt_action_{}", actions.len());
+        actions.push((placeholder.clone(), format!("@{action}")));
+        code.push_str(&placeholder);
+    }
+
+    Some(PreparedExpression { code, actions })
+}
+
+fn restore_datastar_actions(code: &str, actions: &[(String, String)]) -> String {
+    actions
+        .iter()
+        .fold(code.to_string(), |acc, (placeholder, action)| {
+            acc.replace(placeholder, action)
+        })
+}
+
+fn is_js_ident_start(ch: char) -> bool {
+    ch == '_' || ch == '$' || ch.is_ascii_alphabetic()
+}
+
+fn is_js_ident_continue(ch: char) -> bool {
+    is_js_ident_start(ch) || ch.is_ascii_digit()
+}
+
+fn has_datastar_only_signal_identifier(expr: &str) -> bool {
+    let bytes = expr.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'$' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+        if i < bytes.len()
+            && bytes[i] == b'-'
+            && i + 1 < bytes.len()
+            && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_')
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Split a bare expression at `&&`, `||`, `??` (depth-aware).

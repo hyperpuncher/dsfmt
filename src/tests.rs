@@ -122,6 +122,59 @@ fn parser_backed_logical_split_keeps_parenthesized_expression() {
 }
 
 #[test]
+fn trims_and_formats_inline_action_expression() {
+    let input = r#"<button data-on:click="   @post('/items')   ">Save</button>"#;
+    let output = fmt(input, W);
+    assert_eq!(
+        output,
+        r#"<button data-on:click="@post('/items')">Save</button>"#
+    );
+}
+
+#[test]
+fn formats_assignment_without_extra_parentheses() {
+    let input = r#"<button data-on:click="   $open = !$open   ">Toggle</button>"#;
+    let output = fmt(input, W);
+    assert_eq!(
+        output,
+        r#"<button data-on:click="$open = !$open">Toggle</button>"#
+    );
+}
+
+#[test]
+fn indents_multiline_block_expression_relative_to_attribute() {
+    let input = r#"<input data-on:keydown="
+	if (evt.key === 'Enter' && $value) {
+		@post('/items');
+		$value = '';
+	};
+" />"#;
+    let output = fmt(input, W);
+    assert_eq!(
+        output,
+        "<input\n\tdata-on:keydown=\"if (evt.key === 'Enter' && $value) {\n\t\t@post('/items');\n\t\t$value = '';\n\t}\" />"
+    );
+}
+
+#[test]
+fn formats_jsx_expression_string_values_without_corruption() {
+    let input =
+        r#"export const X = ({ item }) => <input data-bind={"item-" + item.id + "-name"} />"#;
+    let output = fmt(input, W);
+    assert_eq!(
+        output,
+        r#"export const X = ({ item }) => <input data-bind={'item-' + item.id + '-name'} />"#
+    );
+}
+
+#[test]
+fn skips_oxc_for_hyphenated_signal_identifier() {
+    let input = r#"<div data-text="   $foo-bar   "></div>"#;
+    let output = fmt(input, W);
+    assert_eq!(output, r#"<div data-text="$foo-bar"></div>"#);
+}
+
+#[test]
 fn preserves_parent_structure() {
     let input = "import { X } from 'y';\nexport const Foo = () => <div data-on:click data-bind:value=\"$x\">hi</div>;\nconst x = 1;";
     let output = fmt(input, W);
