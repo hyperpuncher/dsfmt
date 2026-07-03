@@ -207,33 +207,35 @@ impl<'a> Printer<'a> {
 
 fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
     let trimmed = value.trim();
-    let inner = unwrap_value(trimmed).trim();
-    let (open_quote, close_quote) = quote_wrap(trimmed);
-    let (is_obj, is_arr) = classify_inner(trimmed, inner);
+    let value = ValueParts::parse(trimmed);
+    let inner = value.inner.trim();
 
-    if is_obj || is_arr {
+    if value.is_wrapped_object() || value.is_wrapped_array() {
         let content = &inner[1..inner.len() - 1];
-        let items = non_empty_parts(split_top_level(content, &[',']));
+        let items = parser_collection_items(inner)
+            .unwrap_or_else(|| non_empty_parts(split_top_level(content, &[','])));
         if items.len() <= 1 && trimmed.len() <= line_width {
             p.write(trimmed);
             return;
         }
-        p.write(open_quote);
-        p.write(if is_obj { "{" } else { "[" });
+        p.write(value.open);
+        p.write(if value.is_wrapped_object() { "{" } else { "[" });
         for item in &items {
             p.newline(depth + 1);
             format_object_item(p, item, depth + 1, line_width);
         }
         p.newline(depth);
-        p.write(if is_obj { "}" } else { "]" });
-        p.write(close_quote);
+        p.write(if value.is_wrapped_object() { "}" } else { "]" });
+        p.write(value.close);
     } else {
-        let parts = non_empty_parts(split_top_level(inner, &[';', ',']));
+        let parts = parser_sequence_parts(inner)
+            .unwrap_or_else(|| non_empty_parts(split_top_level(inner, &[';', ','])));
         if parts.len() <= 1 {
             // Try splitting at logical operators
-            let expr_parts = split_at_operators(inner);
+            let expr_parts =
+                parser_logical_parts(inner).unwrap_or_else(|| split_at_operators(inner));
             if expr_parts.len() > 1 {
-                p.write(open_quote);
+                p.write(value.open);
                 for (part, op) in expr_parts.iter() {
                     p.newline(depth + 1);
                     p.write(part);
@@ -243,7 +245,7 @@ fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
                     }
                 }
                 p.newline(depth);
-                p.write(close_quote);
+                p.write(value.close);
                 return;
             }
             // No ;/,/&&/||/?? to split — write inline (JSX expressions, long fn calls, etc.)
@@ -251,24 +253,26 @@ fn format_value(p: &mut Printer, value: &str, depth: usize, line_width: usize) {
             return;
         }
         // Multi-part: format as template statements
-        p.write(open_quote);
+        p.write(value.open);
         for stmt in &parts {
             p.newline(depth + 1);
             p.write(stmt.trim());
             p.write(";");
         }
         p.newline(depth);
-        p.write(close_quote);
+        p.write(value.close);
     }
 }
 
 /// Format a single object entry, recursing into nested objects/arrays.
 fn format_object_item(p: &mut Printer, item: &str, depth: usize, line_width: usize) {
     let item = item.trim();
-    let colon = find_top_level_colon(item);
-    // If no key:value colon found, treat as plain value (array element)
-    let (key, value) = match colon {
-        Some(pos) => (item[..pos].trim(), item[pos + 1..].trim()),
+    let property_parts = parser_property_parts(item).or_else(|| {
+        find_top_level_colon(item).map(|pos| (item[..pos].trim(), item[pos + 1..].trim()))
+    });
+    // If no key:value property found, treat as plain value (array element)
+    let (key, value) = match property_parts {
+        Some(parts) => parts,
         None => {
             // Plain value — check if it's a nested object/array to recurse into
             let trimmed_item = item.trim();
@@ -277,7 +281,8 @@ fn format_object_item(p: &mut Printer, item: &str, depth: usize, line_width: usi
             {
                 let is_obj = trimmed_item.starts_with('{');
                 let inner = &trimmed_item[1..trimmed_item.len() - 1];
-                let sub_items = non_empty_parts(split_top_level(inner, &[',']));
+                let sub_items = parser_collection_items(trimmed_item)
+                    .unwrap_or_else(|| non_empty_parts(split_top_level(inner, &[','])));
                 let has_nested = sub_items.iter().any(|s| {
                     let s = s.trim();
                     (s.starts_with('{') && s.ends_with('}'))
@@ -311,7 +316,8 @@ fn format_object_item(p: &mut Printer, item: &str, depth: usize, line_width: usi
     {
         let is_obj = value.starts_with('{');
         let inner = &value[1..value.len() - 1];
-        let nested_items = non_empty_parts(split_top_level(inner, &[',']));
+        let nested_items = parser_collection_items(value)
+            .unwrap_or_else(|| non_empty_parts(split_top_level(inner, &[','])));
         let total_len = item.len() + depth * 4;
         // Check if items contain nested objects/arrays
         let has_sub_compound = nested_items.iter().any(|s| {
@@ -349,35 +355,8 @@ fn find_top_level_colon(s: &str) -> Option<usize> {
     None
 }
 
-fn classify_inner(trimmed: &str, inner: &str) -> (bool, bool) {
-    let wrapped = trimmed.starts_with('"')
-        || trimmed.starts_with('\'')
-        || trimmed.starts_with("{\"")
-        || trimmed.starts_with("{`")
-        || trimmed.starts_with('`');
-    let is_obj = wrapped && inner.starts_with('{') && inner.ends_with('}');
-    let is_arr = wrapped && inner.starts_with('[') && inner.ends_with(']');
-    (is_obj, is_arr)
-}
-
 fn non_empty_parts(parts: Vec<&str>) -> Vec<&str> {
     parts.into_iter().filter(|s| !s.trim().is_empty()).collect()
-}
-
-fn quote_wrap(trimmed: &str) -> (&str, &str) {
-    if trimmed.starts_with("{`") {
-        ("{`", "`}")
-    } else if trimmed.starts_with('`') {
-        ("`", "`")
-    } else if trimmed.starts_with("{\"") {
-        ("{\"", "\"}")
-    } else if trimmed.starts_with('"') {
-        ("\"", "\"")
-    } else if trimmed.starts_with('\'') {
-        ("'", "'")
-    } else {
-        ("", "")
-    }
 }
 
 // ── Source helpers ─────────────────────────────────────────────────────────
@@ -411,18 +390,255 @@ fn value_needs_split(value: &Option<String>, line_width: usize) -> bool {
     if trimmed.len() > line_width {
         return true;
     }
-    let inner = unwrap_value(trimmed).trim();
-    non_empty_parts(split_top_level(inner, &[';', ','])).len() > 1
+    let inner = ValueParts::parse(trimmed).inner.trim();
+    parser_sequence_parts(inner)
+        .map(|parts| parts.len() > 1)
+        .unwrap_or_else(|| non_empty_parts(split_top_level(inner, &[';', ','])).len() > 1)
 }
 
-fn unwrap_value(v: &str) -> &str {
-    match v {
-        _ if v.starts_with("{\"") && v.ends_with("\"}") => &v[2..v.len() - 2],
-        _ if v.starts_with("{`") && v.ends_with("`}") => &v[2..v.len() - 2],
-        _ if v.starts_with('"') && v.ends_with('"') => &v[1..v.len() - 1],
-        _ if v.starts_with('\'') && v.ends_with('\'') => &v[1..v.len() - 1],
-        _ if v.starts_with('`') && v.ends_with('`') => &v[1..v.len() - 1],
-        _ => v,
+fn parser_sequence_parts(content: &str) -> Option<Vec<&str>> {
+    let mut parser = datastar_parser()?;
+    let tree = parser.parse(content, None)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+
+    let sequence = top_level_sequence(root)?;
+    let mut parts = Vec::new();
+    for child in sequence.named_children(&mut sequence.walk()) {
+        let part = content[child.start_byte()..child.end_byte()].trim();
+        if !part.is_empty() {
+            parts.push(part);
+        }
+    }
+
+    if parts.len() > 1 { Some(parts) } else { None }
+}
+
+fn parser_logical_parts(content: &str) -> Option<Vec<(&str, &str)>> {
+    let mut parser = datastar_parser()?;
+    let tree = parser.parse(content, None)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+
+    let expression = top_level_expression(root)?;
+    let mut operands = Vec::new();
+    let mut operators = Vec::new();
+    flatten_logical_expression(expression, content, &mut operands, &mut operators)?;
+    if operators.is_empty() {
+        return None;
+    }
+
+    let mut parts = Vec::with_capacity(operands.len());
+    for (i, operand) in operands.into_iter().enumerate() {
+        parts.push((operand.trim(), operators.get(i).copied().unwrap_or("")));
+    }
+    Some(parts)
+}
+
+fn flatten_logical_expression<'a>(
+    node: tree_sitter::Node,
+    content: &'a str,
+    operands: &mut Vec<&'a str>,
+    operators: &mut Vec<&'static str>,
+) -> Option<()> {
+    if node.kind() != "binary_expression" {
+        operands.push(content[node.start_byte()..node.end_byte()].trim());
+        return Some(());
+    }
+
+    let left = node.child(0)?;
+    let op = node.child(1)?.kind();
+    let right = node.child(2)?;
+    let op = match op {
+        "&&" => "&&",
+        "||" => "||",
+        "??" => "??",
+        _ => {
+            operands.push(content[node.start_byte()..node.end_byte()].trim());
+            return Some(());
+        }
+    };
+
+    flatten_logical_expression(left, content, operands, operators)?;
+    operators.push(op);
+    flatten_logical_expression(right, content, operands, operators)
+}
+
+fn parser_collection_items(content: &str) -> Option<Vec<&str>> {
+    let mut parser = datastar_parser()?;
+    let tree = parser.parse(content, None)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+
+    let collection = top_level_collection(root)?;
+    let mut items = Vec::new();
+    for child in collection.named_children(&mut collection.walk()) {
+        let kind = child.kind();
+        if matches!(kind, "property" | "spread_element")
+            || (collection.kind() == "array" && kind != "ERROR")
+        {
+            let item = content[child.start_byte()..child.end_byte()].trim();
+            if !item.is_empty() {
+                items.push(item);
+            }
+        }
+    }
+
+    Some(items)
+}
+
+fn parser_property_parts(item: &str) -> Option<(&str, &str)> {
+    let wrapped = format!("{{{item}}}");
+    let mut parser = datastar_parser()?;
+    let tree = parser.parse(&wrapped, None)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+
+    let object = top_level_collection(root)?;
+    if object.kind() != "object" {
+        return None;
+    }
+
+    let property = object
+        .named_children(&mut object.walk())
+        .find(|child| child.kind() == "property")?;
+    let value = property.named_child(1)?;
+    let colon = wrapped[..value.start_byte()].rfind(':')?;
+
+    let key_end = colon.saturating_sub(1);
+    let key = item.get(..key_end)?.trim();
+    let value_start = value.start_byte().saturating_sub(1);
+    let value_end = value.end_byte().saturating_sub(1);
+    let value = item.get(value_start..value_end)?.trim();
+
+    Some((key, value))
+}
+
+fn datastar_parser() -> Option<tree_sitter::Parser> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_datastar::LANGUAGE.into())
+        .ok()?;
+    Some(parser)
+}
+
+fn top_level_expression(root: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let mut candidate = None;
+    for child in root.named_children(&mut root.walk()) {
+        candidate = Some(child);
+        if child.start_byte() == 0 && child.end_byte() == root.end_byte() {
+            break;
+        }
+    }
+
+    let mut node = candidate?;
+    while node.named_child_count() == 1
+        && matches!(
+            node.kind(),
+            "expression_statement" | "primary_expression" | "parenthesized_expression"
+        )
+    {
+        node = node.named_child(0)?;
+    }
+    Some(node)
+}
+
+fn top_level_sequence(root: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    if root.kind() == "sequence_expression" {
+        return Some(root);
+    }
+
+    root.named_children(&mut root.walk()).find(|child| {
+        child.kind() == "sequence_expression"
+            && child.start_byte() == 0
+            && child.end_byte() == root.end_byte()
+    })
+}
+
+fn top_level_collection(root: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    for child in root.named_children(&mut root.walk()) {
+        if matches!(child.kind(), "object" | "array")
+            && child.start_byte() == 0
+            && child.end_byte() == root.end_byte()
+        {
+            return Some(child);
+        }
+        for grandchild in child.named_children(&mut child.walk()) {
+            if matches!(grandchild.kind(), "object" | "array")
+                && grandchild.start_byte() == 0
+                && grandchild.end_byte() == root.end_byte()
+            {
+                return Some(grandchild);
+            }
+        }
+    }
+
+    None
+}
+
+struct ValueParts<'a> {
+    inner: &'a str,
+    open: &'static str,
+    close: &'static str,
+    wrapped: bool,
+}
+
+impl<'a> ValueParts<'a> {
+    fn parse(value: &'a str) -> Self {
+        match value {
+            _ if value.starts_with("{\"") && value.ends_with("\"}") => Self {
+                inner: &value[2..value.len() - 2],
+                open: "{\"",
+                close: "\"}",
+                wrapped: true,
+            },
+            _ if value.starts_with("{`") && value.ends_with("`}") => Self {
+                inner: &value[2..value.len() - 2],
+                open: "{`",
+                close: "`}",
+                wrapped: true,
+            },
+            _ if value.starts_with('"') && value.ends_with('"') => Self {
+                inner: &value[1..value.len() - 1],
+                open: "\"",
+                close: "\"",
+                wrapped: true,
+            },
+            _ if value.starts_with('\'') && value.ends_with('\'') => Self {
+                inner: &value[1..value.len() - 1],
+                open: "'",
+                close: "'",
+                wrapped: true,
+            },
+            _ if value.starts_with('`') && value.ends_with('`') => Self {
+                inner: &value[1..value.len() - 1],
+                open: "`",
+                close: "`",
+                wrapped: true,
+            },
+            _ => Self {
+                inner: value,
+                open: "",
+                close: "",
+                wrapped: false,
+            },
+        }
+    }
+
+    fn is_wrapped_object(&self) -> bool {
+        self.wrapped && self.inner.starts_with('{') && self.inner.ends_with('}')
+    }
+
+    fn is_wrapped_array(&self) -> bool {
+        self.wrapped && self.inner.starts_with('[') && self.inner.ends_with(']')
     }
 }
 

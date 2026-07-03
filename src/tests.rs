@@ -72,6 +72,20 @@ fn object_value_in_quotes() {
 }
 
 #[test]
+fn object_property_boundaries_use_parser() {
+    let input = "<div data-signals=\"{[foo + ':bar']: call(one, two), plain: true}\"></div>";
+    let output = fmt(input, 40);
+    assert!(
+        output.contains("[foo + ':bar']: call(one, two),"),
+        "bad computed key or call args: {output}"
+    );
+    assert!(
+        output.contains("plain: true,"),
+        "missing plain key: {output}"
+    );
+}
+
+#[test]
 fn template_with_statements() {
     let input = "<div data-effect={`$a = 1, $b = 2`}></div>";
     let output = fmt(input, W);
@@ -79,6 +93,32 @@ fn template_with_statements() {
     assert!(output.contains("$b = 2;"), "missing b=2: {output}");
     // Backtick inline on open
     assert!(output.contains("={`"), "missing backtick: {output}");
+}
+
+#[test]
+fn parser_backed_sequence_keeps_nested_commas() {
+    let input = "<div data-effect={`@foo($a, $b), $c = {one: 1, two: 2}`}></div>";
+    let output = fmt(input, W);
+    assert!(
+        output.contains("@foo($a, $b);"),
+        "split call args: {output}"
+    );
+    assert!(
+        output.contains("$c = {one: 1, two: 2};"),
+        "split object literal: {output}"
+    );
+}
+
+#[test]
+fn parser_backed_logical_split_keeps_parenthesized_expression() {
+    let input = "<div data-show=\"$a && ($b || $c) && $d\"></div>";
+    let output = fmt(input, 20);
+    assert!(output.contains("$a &&"), "missing first operand: {output}");
+    assert!(
+        output.contains("($b || $c) &&"),
+        "split nested logical expression: {output}"
+    );
+    assert!(output.contains("$d"), "missing final operand: {output}");
 }
 
 #[test]
