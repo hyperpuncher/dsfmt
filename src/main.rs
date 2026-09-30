@@ -5,109 +5,138 @@ mod config;
 mod parser;
 mod printer;
 
-use std::io::Read;
+use std::io::{self, Read, Write};
+use std::path::Path;
+use std::process::ExitCode;
 
 use clap::Parser;
 use config::Args;
 
-fn main() {
+fn main() -> ExitCode {
     let args = Args::parse();
-
+    let mut failed = false;
     if args.paths.is_empty() {
-        // Read from stdin
-        let mut input = String::new();
-        std::io::stdin()
-            .read_to_string(&mut input)
-            .expect("Failed to read stdin");
-        let output = format_text(&input, &args, "");
-        print!("{output}");
-        return;
-    }
-
-    // Walk files
-    for path in &args.paths {
-        let meta = std::fs::metadata(path);
-        match meta {
-            Ok(m) if m.is_dir() => {
-                format_dir(path, &args);
+        match format_stdin(&args) {
+            Ok(changed) => failed = changed,
+            Err(error) => {
+                eprintln!("dsfmt: stdin: {error}");
+                failed = true;
             }
-            Ok(_) => {
-                format_file(path, &args);
-            }
-            Err(e) => {
-                eprintln!("dsfmt: {path}: {e}");
-                std::process::exit(1);
-            }
-        }
-    }
-}
-
-fn format_text(input: &str, args: &Args, ext: &str) -> String {
-    parser::parse_and_format(input, args.line_width, args.use_spaces, args.tab_width, ext)
-}
-
-fn format_file(path: &str, args: &Args) {
-    // Skip unsupported extensions (safety net for shell globs like `dsfmt *`)
-    if !std::path::Path::new(path)
-        .extension()
-        .is_some_and(|e| match e.to_str() {
-            Some("html" | "htm" | "tsx" | "jsx" | "templ" | "heex") => true,
-            _ => path.ends_with(".blade.php"),
-        })
-    {
-        return;
-    }
-    let input = match std::fs::read(path) {
-        Ok(data) => match String::from_utf8(data) {
-            Ok(s) => s,
-            Err(_) => return, // skip binary files
-        },
-        Err(e) => {
-            eprintln!("dsfmt: {path}: {e}");
-            return;
-        }
-    };
-    let ext = std::path::Path::new(path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-    let output = format_text(&input, args, ext);
-
-    if args.check {
-        if input != output {
-            eprintln!("dsfmt: {path} would be reformatted");
-            std::process::exit(1);
-        }
-    } else if args.write {
-        if input != output {
-            std::fs::write(path, output).unwrap_or_else(|e| {
-                eprintln!("dsfmt: {path}: {e}");
-            });
         }
     } else {
-        print!("{output}");
+        for path in &args.paths {
+            match std::fs::metadata(path) {
+                Ok(metadata) if metadata.is_dir() => failed |= format_dir(path, &args),
+                Ok(_) => failed |= process_file(path, &args),
+                Err(error) => {
+                    eprintln!("dsfmt: {}: {error}", path.display());
+                    failed = true;
+                }
+            }
+        }
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
-fn format_dir(dir: &str, args: &Args) {
-    use ignore::WalkBuilder;
-    use ignore::types::TypesBuilder;
-    let mut types = TypesBuilder::new();
-    types.add("html", "*.html").unwrap();
-    types.add("jsx", "*.jsx").unwrap();
-    types.add("tsx", "*.tsx").unwrap();
-    types.add("templ", "*.templ").unwrap();
-    types.add("heex", "*.heex").unwrap();
-    types.add("blade", "*.blade.php").unwrap();
-    let types = types.build().unwrap();
-    for entry in WalkBuilder::new(dir).types(types).build() {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            let path = entry.path().to_string_lossy().to_string();
-            format_file(&path, args);
+fn format_text(input: &str, args: &Args, filename: &str) -> String {
+    parser::parse_and_format(
+        input,
+        args.line_width,
+        args.use_spaces,
+        args.tab_width,
+        filename,
+    )
+}
+
+fn format_stdin(args: &Args) -> io::Result<bool> {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input)?;
+    let filename = args
+        .stdin_filepath
+        .as_deref()
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let output = format_text(&input, args, &filename);
+    if args.check {
+        let changed = input != output;
+        if changed {
+            eprintln!("dsfmt: stdin would be reformatted");
+        }
+        return Ok(changed);
+    }
+    io::stdout().write_all(output.as_bytes())?;
+    Ok(false)
+}
+
+fn process_file(path: &Path, args: &Args) -> bool {
+    match format_file(path, args) {
+        Ok(changed) => changed,
+        Err(error) => {
+            eprintln!("dsfmt: {}: {error}", path.display());
+            true
         }
     }
+}
+
+fn format_file(path: &Path, args: &Args) -> io::Result<bool> {
+    let filename = path.file_name().unwrap_or_default().to_string_lossy();
+    if parser::lang_from_filename(&filename).is_none() {
+        return Ok(false);
+    }
+    let input = std::fs::read_to_string(path)?;
+    let output = format_text(&input, args, &filename);
+    let changed = input != output;
+    if args.check {
+        if changed {
+            eprintln!("dsfmt: {} would be reformatted", path.display());
+        }
+        return Ok(changed);
+    }
+    if args.write {
+        if changed {
+            write_file(path, &output)?;
+        }
+    } else {
+        io::stdout().write_all(output.as_bytes())?;
+    }
+    Ok(false)
+}
+
+fn write_file(path: &Path, output: &str) -> io::Result<()> {
+    // Follow symlinks, preserve permissions, and never truncate the original on failure.
+    let path = std::fs::canonicalize(path)?;
+    let permissions = std::fs::metadata(&path)?.permissions();
+    if permissions.readonly() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "file is read-only",
+        ));
+    }
+    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+    temporary.write_all(output.as_bytes())?;
+    temporary.as_file().set_permissions(permissions)?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+fn format_dir(dir: &Path, args: &Args) -> bool {
+    let mut failed = false;
+    for entry in ignore::WalkBuilder::new(dir).build() {
+        match entry {
+            Ok(entry) if entry.file_type().is_some_and(|kind| kind.is_file()) => {
+                failed |= process_file(entry.path(), args);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!("dsfmt: {error}");
+                failed = true;
+            }
+        }
+    }
+    failed
 }
