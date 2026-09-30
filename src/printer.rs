@@ -721,7 +721,6 @@ fn format_oxc_expression(expr: &str, line_width: usize) -> Option<String> {
         &wrapped.code,
         oxc_span::SourceType::mjs(),
         options,
-        None,
     )
     .ok()?;
     let printed = formatted.print().ok()?.into_code();

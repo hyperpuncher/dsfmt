@@ -5,17 +5,17 @@ edition = "2024"
 description = "Datastar attribute formatter — reflows data-* attributes and template expressions"
 
 [dependencies]
-tree-sitter = "0.26"
+tree-sitter = "0.27"
 tree-sitter-html = "0.23"
 tree-sitter-typescript = "0.23"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 ignore = "0.4"
 tree-sitter-datastar = { git = "https://github.com/hyperpuncher/tree-sitter-datastar", version = "0.1.0" }
-oxc_formatter = { git = "https://github.com/oxc-project/oxc.git", version = "0.57.0" }
-oxc_allocator = { git = "https://github.com/oxc-project/oxc.git", version = "0.138.0" }
-oxc_span = { git = "https://github.com/oxc-project/oxc.git", version = "0.138.0" }
-oxc_formatter_core = { git = "https://github.com/oxc-project/oxc.git", version = "0.57.0" }
+oxc_formatter = { git = "https://github.com/oxc-project/oxc.git", version = "0.71.0" }
+oxc_allocator = { git = "https://github.com/oxc-project/oxc.git", version = "0.152.0" }
+oxc_span = { git = "https://github.com/oxc-project/oxc.git", version = "0.152.0" }
+oxc_formatter_core = { git = "https://github.com/oxc-project/oxc.git", version = "0.71.0" }
 
 [profile.release]
 opt-level = 3
