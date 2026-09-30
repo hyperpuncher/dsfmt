@@ -1111,7 +1111,7 @@ dependencies = [
 [[package]]
 name = "tree-sitter-datastar"
 version = "0.1.0"
-source = "git+https://github.com/hyperpuncher/tree-sitter-datastar#d8561be93d9ec81b9f1258f38b61cdc57c509260"
+source = "git+https://github.com/hyperpuncher/tree-sitter-datastar#2a2285d698332c8c1992d1f9f0d71d0f9cc416bb"
 dependencies = [
  "cc",
  "tree-sitter-language",
