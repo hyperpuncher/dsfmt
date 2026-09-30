@@ -66,6 +66,10 @@ jobs:
       contents: write
 
     steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -80,8 +84,11 @@ jobs:
           rm -rf dist/x86_64-unknown-linux-gnu dist/aarch64-unknown-linux-gnu
           rm -rf dist/x86_64-apple-darwin dist/aarch64-apple-darwin dist/x86_64-pc-windows-msvc
 
+      - name: Generate release notes
+        run: bash scripts/release-notes.sh > /tmp/release-notes.md
+
       - name: Release
         uses: softprops/action-gh-release@v3
         with:
           files: dist/*
-          generate_release_notes: true
+          body_path: /tmp/release-notes.md
