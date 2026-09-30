@@ -1,21 +1,22 @@
 check:
-    cargo fmt
-    cargo clippy --all-targets
+    cargo fmt --check
+    cargo clippy --locked --all-targets -- -D warnings
 
-full:
-    cargo fmt
-    cargo clippy --all-targets
-    cargo test --all-targets
+full: check
+    cargo test --locked --all-targets
 
 build:
-    cargo build --release
+    cargo build --locked --release
 
 fix:
-    cargo clippy --fix --allow-dirty --lib --tests
+    cargo clippy --fix --allow-dirty --all-targets
     cargo fmt
 
 test:
-    cargo test --all-targets
+    cargo test --locked --all-targets
+
+bench:
+    cargo run --locked --release --example benchmark
 
 update:
     cargo update
